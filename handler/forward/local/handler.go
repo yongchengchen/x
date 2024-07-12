@@ -12,7 +12,10 @@ import (
 	"net/http/httputil"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"math/rand"
 
 	"github.com/go-gost/core/bypass"
 	"github.com/go-gost/core/chain"
@@ -39,6 +42,45 @@ type forwardHandler struct {
 	hop     hop.Hop
 	md      metadata
 	options handler.Options
+}
+
+type DomainIPEntry struct {
+	Value      string
+	Expiration int64
+}
+
+type TTLDomainMap struct {
+	data map[string]DomainIPEntry
+	mu   sync.Mutex
+}
+
+var ttlDomainMap = TTLDomainMap{
+	data: make(map[string]DomainIPEntry),
+}
+
+// Set function to add an entry with a TTL
+func (m *TTLDomainMap) Set(key, value string, ttl time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	expiration := time.Now().Add(ttl).Unix()
+	m.data[key] = DomainIPEntry{
+		Value:      value,
+		Expiration: expiration,
+	}
+}
+
+// Get function to retrieve an entry
+func (m *TTLDomainMap) Get(key string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	entry, found := m.data[key]
+	if !found || time.Now().Unix() > entry.Expiration {
+		delete(m.data, key)
+		return "", false
+	}
+	return entry.Value, true
 }
 
 func NewHandler(opts ...handler.Option) handler.Handler {
@@ -119,6 +161,7 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 			Addr: host,
 		}
 	}
+
 	if h.hop != nil {
 		target = h.hop.Select(ctx,
 			hop.HostSelectOption(host),
@@ -143,11 +186,16 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		}
 	}
 
+	toHost, toPort, _ := net.SplitHostPort(addr)
+	toIp, _ := getRealTargetIp(toHost)
 	log = log.WithFields(map[string]any{
-		"host": host,
-		"node": target.Name,
-		"dst":  fmt.Sprintf("%s/%s", addr, network),
+		"host":      host,
+		"node":      target.Name,
+		"dst":       fmt.Sprintf("%s/%s", addr, network),
+		"to_host":   toHost,
+		"to_realip": toIp,
 	})
+	addr = fmt.Sprintf("%s:%s", toIp, toPort)
 
 	log.Debugf("%s >> %s", conn.RemoteAddr(), addr)
 
@@ -174,6 +222,35 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	}).Infof("%s >-< %s", conn.RemoteAddr(), target.Addr)
 
 	return nil
+}
+
+func getRealTargetIp(ipOrDomain string) (string, error) {
+	// Check if the string is a valid IP address
+	if net.ParseIP(ipOrDomain) != nil {
+		return ipOrDomain, nil
+	}
+
+	ip, t := ttlDomainMap.Get(ipOrDomain)
+	if t {
+		return ip, nil
+	}
+
+	ips, err := net.LookupIP(ipOrDomain)
+	if err != nil {
+		return "", err
+	}
+
+	var ipStrs []string
+	for _, ip := range ips {
+		ipStrs = append(ipStrs, ip.String())
+	}
+	if len(ipStrs) > 0 {
+		ip = ipStrs[rand.New(rand.NewSource(time.Now().UnixNano())).Intn(len(ipStrs))]
+		ttlDomainMap.Set(ipOrDomain, ip, 5*time.Minute)
+		return ip, nil
+	}
+
+	return "", fmt.Errorf("%s can not find IP", ipOrDomain)
 }
 
 func (h *forwardHandler) handleHTTP(ctx context.Context, rw io.ReadWriter, remoteAddr net.Addr, log logger.Logger) (err error) {
