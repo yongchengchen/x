@@ -195,7 +195,11 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 		"to_host":   toHost,
 		"to_realip": toIp,
 	})
+
 	addr = fmt.Sprintf("%s:%s", toIp, toPort)
+	if isIPv6(toIp) {
+		addr = fmt.Sprintf("[%s]:%s", toIp, toPort)
+	}
 
 	log.Debugf("%s >> %s", conn.RemoteAddr(), addr)
 
@@ -222,6 +226,18 @@ func (h *forwardHandler) Handle(ctx context.Context, conn net.Conn, opts ...hand
 	}).Infof("%s >-< %s", conn.RemoteAddr(), target.Addr)
 
 	return nil
+}
+
+func isIPv6(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+
+	if ip.To16() != nil {
+		return true
+	}
+	return false
 }
 
 func getRealTargetIp(ipOrDomain string) (string, error) {
