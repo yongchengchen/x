@@ -1,4 +1,3 @@
-# The extended (may be experimental) features outside the main gost tree.
 ## Support TCP port forward to use domain name instead of target ip.
 
 Now can run a TCP port forward like:
