@@ -234,7 +234,7 @@ func isIPv6(ipStr string) bool {
 		return false
 	}
 
-	if ip.To16() != nil {
+	if strings.Contains(ipStr, ":") {
 		return true
 	}
 	return false
@@ -258,7 +258,10 @@ func getRealTargetIp(ipOrDomain string) (string, error) {
 
 	var ipStrs []string
 	for _, ip := range ips {
-		ipStrs = append(ipStrs, ip.String())
+		if isIPv6(ip.String()) {
+		} else {
+			ipStrs = append(ipStrs, ip.String())
+		}
 	}
 	if len(ipStrs) > 0 {
 		ip = ipStrs[rand.New(rand.NewSource(time.Now().UnixNano())).Intn(len(ipStrs))]
